@@ -1,0 +1,39 @@
+{
+  "name": "FCMReceiver",
+  "version": "1.0.0",
+  "description": "Firebase Cloud Messaging receiver for ESP32 and ESP8266. Receives FCM push messages via MCS protocol with WebPush aesgcm decryption.",
+  "keywords": [
+    "fcm",
+    "firebase",
+    "push-notifications",
+    "mqtt",
+    "mcs",
+    "esp32"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agusibrahim/esp-fcm-arduino.git"
+  },
+  "authors": [
+    {
+      "name": "Agus Ibrahim",
+      "email": "hello@agusibrah.im",
+      "url": "https://github.com/agusibrahim"
+    }
+  ],
+  "frameworks": "arduino",
+  "platforms": [
+    "espressif32",
+    "espressif8266"
+  ],
+  "dependencies": {},
+  "export": {
+    "include": [
+      "src",
+      "library.properties",
+      "library.json",
+      "README.md",
+      "examples"
+    ]
+  }
+}

@@ -3,3 +3,6 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Prevent accidental commit of private credentials in main.cpp
+src/main.cpp
