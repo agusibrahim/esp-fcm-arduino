@@ -42,5 +42,8 @@ int pb_decode_string(pb_decoder_t *d, char *out, size_t out_cap, size_t *out_len
 int pb_decode_bytes(pb_decoder_t *d, const uint8_t **out, size_t *out_len);
 int pb_skip_field(pb_decoder_t *d, uint8_t wire_type);
 
+int pb_decode_uint64(pb_decoder_t *d, uint64_t *value);
+int pb_decode_fixed64(pb_decoder_t *d, uint64_t *value);
+
 int pb_put_uvarint(uint8_t *buf, size_t buf_cap, uint64_t value);
 int pb_try_read_varint(const uint8_t *buf, size_t len, size_t *value, size_t *consumed);

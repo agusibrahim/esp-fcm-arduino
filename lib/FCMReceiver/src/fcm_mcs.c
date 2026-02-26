@@ -140,8 +140,6 @@ static fcm_notif_data_t *parse_notif_json(const char *json_str) {
 // ── Login request builder ──
 
 static uint8_t *build_login_request(size_t *out_len) {
-    const fcm_config_t *cfg = fcm_get_config();
-
     // Build the setting submessage: {name="new_vc", value="1"}
     pb_encoder_t setting_enc;
     pb_encoder_init(&setting_enc);
@@ -154,9 +152,9 @@ static uint8_t *build_login_request(size_t *out_len) {
     char android_id_str[32];
     char security_token_str[32];
     char device_id_str[48];
-    snprintf(android_id_str, sizeof(android_id_str), "%" PRIu64, cfg->android_id);
-    snprintf(security_token_str, sizeof(security_token_str), "%" PRIu64, cfg->security_token);
-    snprintf(device_id_str, sizeof(device_id_str), "android-%" PRIx64, cfg->android_id);
+    snprintf(android_id_str, sizeof(android_id_str), "%" PRIu64, g_fcm_state.android_id);
+    snprintf(security_token_str, sizeof(security_token_str), "%" PRIu64, g_fcm_state.security_token);
+    snprintf(device_id_str, sizeof(device_id_str), "android-%" PRIx64, g_fcm_state.android_id);
 
     // Build login request protobuf
     pb_encoder_t enc;

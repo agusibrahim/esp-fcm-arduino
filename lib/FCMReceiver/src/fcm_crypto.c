@@ -63,6 +63,45 @@ int fcm_base64url_decode(const char *input, size_t input_len,
     return 0;
 }
 
+// ── Base64URL encode (no padding) ──
+
+int fcm_base64url_encode(const uint8_t *input, size_t input_len,
+                          char *output, size_t output_cap, size_t *output_len) {
+    size_t olen = 0;
+    int ret = mbedtls_base64_encode((unsigned char *)output, output_cap, &olen,
+                                     input, input_len);
+    if (ret != 0) return -1;
+
+    // Replace + with -, / with _, strip =
+    size_t j = 0;
+    for (size_t i = 0; i < olen; i++) {
+        if (output[i] == '+')
+            output[j++] = '-';
+        else if (output[i] == '/')
+            output[j++] = '_';
+        else if (output[i] == '=')
+            continue;  // skip padding
+        else
+            output[j++] = output[i];
+    }
+    output[j] = '\0';
+    if (output_len) *output_len = j;
+    return 0;
+}
+
+// ── Standard base64 encode ──
+
+static int fcm_base64_encode(const uint8_t *input, size_t input_len,
+                              char *output, size_t output_cap, size_t *output_len) {
+    size_t olen = 0;
+    int ret = mbedtls_base64_encode((unsigned char *)output, output_cap, &olen,
+                                     input, input_len);
+    if (ret != 0) return -1;
+    output[olen] = '\0';
+    if (output_len) *output_len = olen;
+    return 0;
+}
+
 // ── HKDF helpers (manual implementation, Arduino SDK lacks mbedtls_hkdf) ──
 
 // HKDF-Extract: PRK = HMAC-SHA256(salt, IKM)
@@ -117,13 +156,10 @@ static int hkdf_expand(const uint8_t *prk, size_t prk_len,
     return 0;
 }
 
-// ── Init: load private key and auth secret from config ──
+// ── Init: load private key and auth secret from parameters ──
 
-esp_err_t fcm_crypto_init(void) {
+esp_err_t fcm_crypto_init_with_keys(const char *private_key_b64, const char *auth_secret_b64) {
     if (s_initialized) return ESP_OK;
-
-    const fcm_config_t *cfg = fcm_get_config();
-    if (!cfg) return ESP_FAIL;
 
     mbedtls_ecp_group_init(&s_grp);
     mbedtls_mpi_init(&s_d);
@@ -133,14 +169,14 @@ esp_err_t fcm_crypto_init(void) {
     uint8_t der_buf[256];
     size_t der_len = 0;
     int ret = mbedtls_base64_decode(der_buf, sizeof(der_buf), &der_len,
-                                     (const uint8_t *)cfg->private_key_b64,
-                                     strlen(cfg->private_key_b64));
+                                     (const uint8_t *)private_key_b64,
+                                     strlen(private_key_b64));
     if (ret != 0) {
         printf("[FCM] ERROR: Failed to base64 decode private key: %d\n", ret);
         return ESP_FAIL;
     }
 
-    // Parse PKCS8 key
+    // Parse PKCS8 key (mbedTLS 2.x: 5 args)
     mbedtls_pk_context pk;
     mbedtls_pk_init(&pk);
     ret = mbedtls_pk_parse_key(&pk, der_buf, der_len, NULL, 0);
@@ -158,7 +194,7 @@ esp_err_t fcm_crypto_init(void) {
         return ESP_FAIL;
     }
 
-    // Export key components from the parsed PK context
+    // Export key components (mbedTLS 2.x: direct access)
     mbedtls_ecp_keypair *ec = mbedtls_pk_ec(pk);
     ret = mbedtls_mpi_copy(&s_d, &ec->d);
     if (ret != 0) {
@@ -185,18 +221,119 @@ esp_err_t fcm_crypto_init(void) {
     }
     s_client_pub_len = olen;
 
-    // Decode auth secret
+    // Decode auth secret (may be base64 or base64url)
+    size_t as_len = strlen(auth_secret_b64);
     ret = mbedtls_base64_decode(s_auth_secret, sizeof(s_auth_secret), &s_auth_secret_len,
-                                 (const uint8_t *)cfg->auth_secret_b64,
-                                 strlen(cfg->auth_secret_b64));
+                                 (const uint8_t *)auth_secret_b64, as_len);
     if (ret != 0) {
-        printf("[FCM] ERROR: Failed to base64 decode auth secret: %d\n", ret);
-        return ESP_FAIL;
+        // Try base64url decode
+        ret = fcm_base64url_decode(auth_secret_b64, as_len,
+                                    s_auth_secret, sizeof(s_auth_secret), &s_auth_secret_len);
+        if (ret != 0) {
+            printf("[FCM] ERROR: Failed to decode auth secret\n");
+            return ESP_FAIL;
+        }
     }
 
     s_initialized = true;
     printf("[FCM] Crypto initialized (pub key %d bytes, auth secret %d bytes)\n",
              (int)s_client_pub_len, (int)s_auth_secret_len);
+    return ESP_OK;
+}
+
+// ── Generate ECDH P-256 key pair + auth secret ──
+
+esp_err_t fcm_crypto_generate_keys(char *priv_key_b64, size_t priv_cap,
+                                    char *pub_key_b64url, size_t pub_cap,
+                                    char *auth_secret_b64url, size_t auth_cap) {
+    int ret;
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+
+    // Setup PK context for EC key
+    ret = mbedtls_pk_setup(&pk, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
+    if (ret != 0) {
+        printf("[FCM] ERROR: pk_setup failed: -0x%04x\n", (unsigned)-ret);
+        mbedtls_pk_free(&pk);
+        return ESP_FAIL;
+    }
+
+    // Generate key pair on secp256r1
+    mbedtls_ecp_keypair *ec = mbedtls_pk_ec(pk);
+    ret = mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, ec, rng_func, NULL);
+    if (ret != 0) {
+        printf("[FCM] ERROR: ecp_gen_key failed: -0x%04x\n", (unsigned)-ret);
+        mbedtls_pk_free(&pk);
+        return ESP_FAIL;
+    }
+
+    // Export private key as PKCS8 DER
+    // mbedtls_pk_write_key_der writes from the END of the buffer
+    uint8_t der_buf[256];
+    ret = mbedtls_pk_write_key_der(&pk, der_buf, sizeof(der_buf));
+    if (ret < 0) {
+        printf("[FCM] ERROR: pk_write_key_der failed: -0x%04x\n", (unsigned)-ret);
+        mbedtls_pk_free(&pk);
+        return ESP_FAIL;
+    }
+    // ret = number of bytes written, data starts at der_buf + sizeof(der_buf) - ret
+    size_t der_len = (size_t)ret;
+    uint8_t *der_start = der_buf + sizeof(der_buf) - der_len;
+
+    // Base64 encode private key DER
+    if (fcm_base64_encode(der_start, der_len, priv_key_b64, priv_cap, NULL) != 0) {
+        printf("[FCM] ERROR: Failed to base64 encode private key\n");
+        mbedtls_pk_free(&pk);
+        return ESP_FAIL;
+    }
+
+    // Export uncompressed public key (65 bytes: 0x04 || X || Y)
+    uint8_t pub_buf[65];
+    size_t pub_len = 0;
+    ret = mbedtls_ecp_point_write_binary(&ec->grp, &ec->Q,
+                                          MBEDTLS_ECP_PF_UNCOMPRESSED,
+                                          &pub_len, pub_buf, sizeof(pub_buf));
+    mbedtls_pk_free(&pk);
+
+    if (ret != 0 || pub_len != 65) {
+        printf("[FCM] ERROR: Failed to export public key: %d\n", ret);
+        return ESP_FAIL;
+    }
+
+    // Base64url encode public key
+    if (fcm_base64url_encode(pub_buf, pub_len, pub_key_b64url, pub_cap, NULL) != 0) {
+        printf("[FCM] ERROR: Failed to base64url encode public key\n");
+        return ESP_FAIL;
+    }
+
+    // Generate 16 random bytes for auth_secret
+    uint8_t auth_raw[16];
+    esp_fill_random(auth_raw, sizeof(auth_raw));
+
+    // Base64url encode auth secret
+    if (fcm_base64url_encode(auth_raw, sizeof(auth_raw), auth_secret_b64url, auth_cap, NULL) != 0) {
+        printf("[FCM] ERROR: Failed to base64url encode auth secret\n");
+        return ESP_FAIL;
+    }
+
+    printf("[FCM] Generated new ECDH keys and auth secret\n");
+    return ESP_OK;
+}
+
+// ── Generate Firebase Installation ID ──
+
+esp_err_t fcm_generate_fid(char *fid_out, size_t fid_cap) {
+    uint8_t raw[17];
+    esp_fill_random(raw, sizeof(raw));
+    // FID format: first 4 bits = 0x7 (0111), rest random
+    raw[0] = 0x70 | (raw[0] & 0x0F);
+
+    if (fcm_base64url_encode(raw, sizeof(raw), fid_out, fid_cap, NULL) != 0) {
+        printf("[FCM] ERROR: Failed to base64url encode FID\n");
+        return ESP_FAIL;
+    }
+
+    printf("[FCM] Generated FID: %s\n", fid_out);
     return ESP_OK;
 }
 
@@ -355,6 +492,5 @@ esp_err_t fcm_decrypt(const uint8_t *server_pub, size_t server_pub_len,
         *out_len = ciphertext_len;
     }
 
-    // printf("[FCM] Decrypted %d bytes\n", (int)*out_len);
     return ESP_OK;
 }

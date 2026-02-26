@@ -8,14 +8,11 @@
 #define WIFI_PASS       "YOUR_WIFI_PASSWORD"
 #define FCM_TOPIC       "testtopic123"
 
-// Replace these values with your actual device credentials generated via the push receiver script
+// Only api_key, app_id, project_id needed — credentials auto-generated and saved to NVS
 static const fcm_config_t fcm_cfg = {
-    .android_id       = 4744667548749788366ULL,
-    .security_token   = 5844494356801553287ULL,
-    .fcm_token        = "YOUR_FCM_TOKEN_HERE",
-    .app_id           = "YOUR_FIREBASE_APP_ID",
-    .private_key_b64  = "YOUR_PRIVATE_KEY_BASE64",
-    .auth_secret_b64  = "YOUR_AUTH_SECRET_BASE64",
+    .api_key    = "YOUR_FIREBASE_API_KEY",
+    .app_id     = "YOUR_FIREBASE_APP_ID",
+    .project_id = "YOUR_FIREBASE_PROJECT_ID",
 };
 
 // ── FCM message callback ──
@@ -68,7 +65,7 @@ void setup() {
     }
     Serial.printf("\nWiFi connected, IP: %s\n", WiFi.localIP().toString().c_str());
 
-    // Initialize FCM
+    // Initialize FCM (auto-registers if no credentials in NVS)
     esp_err_t ret = fcm_init(&fcm_cfg);
     if (ret != ESP_OK) {
         Serial.printf("fcm_init failed: %d\n", ret);

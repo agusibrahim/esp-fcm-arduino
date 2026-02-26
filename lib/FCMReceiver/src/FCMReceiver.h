@@ -12,13 +12,34 @@ extern "C" {
 // ── Configuration ──
 
 typedef struct {
+    // Required for auto-registration:
+    const char *api_key;       // Firebase API key
+    const char *app_id;        // Firebase app ID
+    const char *project_id;    // Firebase project ID
+
+    // Optional: pre-generated credentials (skip registration if android_id != 0)
     uint64_t    android_id;
     uint64_t    security_token;
     const char *fcm_token;
-    const char *app_id;
     const char *private_key_b64;
     const char *auth_secret_b64;
 } fcm_config_t;
+
+// ── Runtime state (populated by fcm_init, read by other modules) ──
+
+typedef struct {
+    uint64_t android_id;
+    uint64_t security_token;
+    char     fcm_token[512];
+    char     private_key_b64[256];
+    char     auth_secret_b64[64];
+    char     app_id[128];
+    char     project_id[128];
+    char     api_key[128];
+} fcm_state_t;
+
+// Global runtime state — set by fcm_init(), read by fcm_mcs, fcm_subscribe
+extern fcm_state_t g_fcm_state;
 
 // ── Message types ──
 
@@ -62,7 +83,9 @@ typedef void (*fcm_message_cb_t)(const fcm_message_t *msg);
 
 // ── Public API ──
 
-// Store config and initialize crypto keys. Call once after WiFi is connected.
+// Initialize FCM: load or generate credentials, init crypto.
+// If config has pre-generated credentials (android_id != 0), uses them directly.
+// Otherwise tries NVS, then runs auto-registration.
 esp_err_t fcm_init(const fcm_config_t *config);
 
 // Subscribe to a topic via GCM register3 endpoint.
@@ -84,8 +107,9 @@ esp_err_t fcm_decrypt(const uint8_t *crypto_key, size_t crypto_key_len,
 int fcm_base64url_decode(const char *input, size_t input_len,
                           uint8_t *output, size_t output_cap, size_t *output_len);
 
-// ── Internal: access stored config (used by library modules) ──
-const fcm_config_t *fcm_get_config(void);
+// Base64URL encode (no padding).
+int fcm_base64url_encode(const uint8_t *input, size_t input_len,
+                          char *output, size_t output_cap, size_t *output_len);
 
 #ifdef __cplusplus
 }

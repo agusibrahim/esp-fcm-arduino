@@ -144,6 +144,19 @@ int pb_skip_field(pb_decoder_t *d, uint8_t wire_type) {
     }
 }
 
+int pb_decode_uint64(pb_decoder_t *d, uint64_t *value) {
+    return pb_decode_varint(d, value);
+}
+
+int pb_decode_fixed64(pb_decoder_t *d, uint64_t *value) {
+    if (d->pos + 8 > d->len) return -1;
+    *value = 0;
+    for (int i = 0; i < 8; i++)
+        *value |= ((uint64_t)d->buf[d->pos + i]) << (i * 8);
+    d->pos += 8;
+    return 0;
+}
+
 int pb_put_uvarint(uint8_t *buf, size_t buf_cap, uint64_t value) {
     int i = 0;
     while (value >= 0x80) {

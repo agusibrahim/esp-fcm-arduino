@@ -28,14 +28,11 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
 }
 
 esp_err_t fcm_subscribe(const char *topic) {
-    const fcm_config_t *cfg = fcm_get_config();
-    if (!cfg) return ESP_FAIL;
-
     // Build Authorization header
     char auth_header[128];
     snprintf(auth_header, sizeof(auth_header), "AidLogin %llu:%llu",
-             (unsigned long long)cfg->android_id,
-             (unsigned long long)cfg->security_token);
+             (unsigned long long)g_fcm_state.android_id,
+             (unsigned long long)g_fcm_state.security_token);
 
     // Build topic path
     char topic_path[256];
@@ -58,14 +55,14 @@ esp_err_t fcm_subscribe(const char *topic) {
         "&app=org.chromium.linux"
         "&device=%llu"
         "&X-gms_app_id=%s",
-        cfg->fcm_token,
-        cfg->fcm_token,
+        g_fcm_state.fcm_token,
+        g_fcm_state.fcm_token,
         topic_path,
         topic_path,
-        cfg->fcm_token,
+        g_fcm_state.fcm_token,
         kid_str,
-        (unsigned long long)cfg->android_id,
-        cfg->app_id);
+        (unsigned long long)g_fcm_state.android_id,
+        g_fcm_state.app_id);
 
     printf("[FCM] Subscribing to topic: %s\n", topic_path);
 
