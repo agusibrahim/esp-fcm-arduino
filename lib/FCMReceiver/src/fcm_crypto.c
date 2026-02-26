@@ -355,6 +355,6 @@ esp_err_t fcm_decrypt(const uint8_t *server_pub, size_t server_pub_len,
         *out_len = ciphertext_len;
     }
 
-    printf("[FCM] Decrypted %d bytes\n", (int)*out_len);
+    // printf("[FCM] Decrypted %d bytes\n", (int)*out_len);
     return ESP_OK;
 }

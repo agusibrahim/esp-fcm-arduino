@@ -21,18 +21,18 @@ static const fcm_config_t fcm_cfg = {
 
 static void on_message(const fcm_message_t *msg) {
     Serial.println("=== FCM Message Received ===");
-    if (msg->id[0])            Serial.printf("  id:       %s\n", msg->id);
-    if (msg->from[0])          Serial.printf("  from:     %s\n", msg->from);
-    if (msg->category[0])      Serial.printf("  category: %s\n", msg->category);
-    if (msg->persistent_id[0]) Serial.printf("  pid:      %s\n", msg->persistent_id);
+    // if (msg->id[0])            Serial.printf("  id:       %s\n", msg->id);
+    // if (msg->from[0])          Serial.printf("  from:     %s\n", msg->from);
+    // if (msg->category[0])      Serial.printf("  category: %s\n", msg->category);
+    // if (msg->persistent_id[0]) Serial.printf("  pid:      %s\n", msg->persistent_id);
 
     // Print app_data key-value pairs
     const char *crypto_key_str = NULL;
     const char *encryption_str = NULL;
 
     for (int i = 0; i < msg->app_data_count; i++) {
-        Serial.printf("  app_data[%d]: %s = %s\n", i,
-                 msg->app_data[i].key, msg->app_data[i].value);
+        // Serial.printf("  app_data[%d]: %s = %s\n", i,
+        //          msg->app_data[i].key, msg->app_data[i].value);
 
         if (strcmp(msg->app_data[i].key, "crypto-key") == 0) {
             crypto_key_str = msg->app_data[i].value;
@@ -43,7 +43,7 @@ static void on_message(const fcm_message_t *msg) {
 
     // If encrypted message, try to decrypt
     if (crypto_key_str && encryption_str && msg->raw_data && msg->raw_data_len > 0) {
-        Serial.printf("  raw_data: %d bytes (encrypted)\n", (int)msg->raw_data_len);
+        // Serial.printf("  raw_data: %d bytes (encrypted)\n", (int)msg->raw_data_len);
 
         // Extract dh= from crypto-key
         const char *dh_start = strstr(crypto_key_str, "dh=");
@@ -91,7 +91,7 @@ static void on_message(const fcm_message_t *msg) {
             uint8_t *printbuf = (uint8_t *)malloc(plaintext_len + 1);
             memcpy(printbuf, plaintext, plaintext_len);
             printbuf[plaintext_len] = '\0';
-            Serial.printf("  DECRYPTED (%d bytes): %s\n", (int)plaintext_len, (char *)printbuf);
+            Serial.printf("%s\n", (char *)printbuf);
             free(printbuf);
         } else {
             Serial.println("  Decryption failed");
@@ -146,12 +146,12 @@ void setup() {
     Serial.println("FCM initialized");
 
     // Subscribe to topic
-    ret = fcm_subscribe(FCM_TOPIC);
-    if (ret != ESP_OK) {
-        Serial.printf("fcm_subscribe failed: %d (continuing anyway)\n", ret);
-    } else {
-        Serial.println("Topic subscription successful");
-    }
+    // ret = fcm_subscribe(FCM_TOPIC);
+    // if (ret != ESP_OK) {
+    //     Serial.printf("fcm_subscribe failed: %d (continuing anyway)\n", ret);
+    // } else {
+    //     Serial.println("Topic subscription successful");
+    // }
 
     // Start MCS listener in dedicated task (TLS needs ~16KB stack)
     Serial.println("Starting MCS listener...");
