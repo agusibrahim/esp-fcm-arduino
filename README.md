@@ -89,7 +89,7 @@ void setup() {
 void loop() { delay(1000); }
 ```
 
-See the [BasicReceive example](./examples/BasicReceive/BasicReceive.ino) for a complete working sketch.
+See the [BasicReceive example](./lib/FCMReceiver/examples/BasicReceive/BasicReceive.ino) for a complete working sketch.
 
 ## How It Works
 
