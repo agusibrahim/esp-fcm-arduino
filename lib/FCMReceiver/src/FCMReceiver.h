@@ -28,6 +28,21 @@ typedef struct {
 } fcm_app_data_t;
 
 typedef struct {
+    char key[64];
+    char value[256];
+} fcm_data_kv_t;
+
+typedef struct {
+    char          title[256];
+    char          body[512];
+    char          fcm_message_id[128];
+    char          from[64];
+    char          priority[16];
+    fcm_data_kv_t data[8];
+    int           data_count;
+} fcm_notif_data_t;
+
+typedef struct {
     char          id[128];
     char          from[256];
     char          to[256];
@@ -39,6 +54,8 @@ typedef struct {
     fcm_app_data_t app_data[16];
     int           app_data_count;
     bool          immediate_ack;
+    char         *json_data;       // Decrypted JSON string (null-terminated), or NULL
+    fcm_notif_data_t *notif_data;  // Parsed notification struct, or NULL
 } fcm_message_t;
 
 typedef void (*fcm_message_cb_t)(const fcm_message_t *msg);

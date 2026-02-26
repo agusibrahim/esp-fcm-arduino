@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include "esp_tls.h"
 #include "fcm_root_ca.h"
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
@@ -46,6 +47,68 @@ static void save_last_timestamp(uint64_t ts) {
         nvs_commit(h);
         nvs_close(h);
     }
+}
+
+// ── Parse decrypted JSON into notif_data struct ──
+// Returns malloc'd fcm_notif_data_t or NULL if JSON structure doesn't match.
+
+static fcm_notif_data_t *parse_notif_json(const char *json_str) {
+    if (!json_str) return NULL;
+
+    cJSON *root = cJSON_Parse(json_str);
+    if (!root) return NULL;
+
+    fcm_notif_data_t *nd = (fcm_notif_data_t *)calloc(1, sizeof(fcm_notif_data_t));
+    if (!nd) { cJSON_Delete(root); return NULL; }
+
+    // "notification" object
+    cJSON *notif = cJSON_GetObjectItem(root, "notification");
+    if (notif && cJSON_IsObject(notif)) {
+        cJSON *title = cJSON_GetObjectItem(notif, "title");
+        if (title && cJSON_IsString(title))
+            snprintf(nd->title, sizeof(nd->title), "%s", title->valuestring);
+        cJSON *body = cJSON_GetObjectItem(notif, "body");
+        if (body && cJSON_IsString(body))
+            snprintf(nd->body, sizeof(nd->body), "%s", body->valuestring);
+    }
+
+    // "fcmMessageId"
+    cJSON *mid = cJSON_GetObjectItem(root, "fcmMessageId");
+    if (mid && cJSON_IsString(mid))
+        snprintf(nd->fcm_message_id, sizeof(nd->fcm_message_id), "%s", mid->valuestring);
+
+    // "from"
+    cJSON *from = cJSON_GetObjectItem(root, "from");
+    if (from && cJSON_IsString(from))
+        snprintf(nd->from, sizeof(nd->from), "%s", from->valuestring);
+
+    // "priority"
+    cJSON *prio = cJSON_GetObjectItem(root, "priority");
+    if (prio && cJSON_IsString(prio))
+        snprintf(nd->priority, sizeof(nd->priority), "%s", prio->valuestring);
+
+    // "data" object → key-value pairs
+    cJSON *data = cJSON_GetObjectItem(root, "data");
+    if (data && cJSON_IsObject(data)) {
+        cJSON *item = NULL;
+        cJSON_ArrayForEach(item, data) {
+            if (nd->data_count >= 8) break;
+            snprintf(nd->data[nd->data_count].key, sizeof(nd->data[0].key), "%s", item->string);
+            if (cJSON_IsString(item))
+                snprintf(nd->data[nd->data_count].value, sizeof(nd->data[0].value), "%s", item->valuestring);
+            else {
+                char *printed = cJSON_PrintUnformatted(item);
+                if (printed) {
+                    snprintf(nd->data[nd->data_count].value, sizeof(nd->data[0].value), "%s", printed);
+                    free(printed);
+                }
+            }
+            nd->data_count++;
+        }
+    }
+
+    cJSON_Delete(root);
+    return nd;
 }
 
 // MCS constants
@@ -369,6 +432,26 @@ esp_err_t fcm_start(fcm_message_cb_t callback) {
                                 fcm_message_t msg;
                                 parse_data_message(payload, message_size, &msg);
 
+                                // Skip internal FCM messages (e.g. deleted_messages)
+                                bool is_internal = false;
+                                for (int i = 0; i < msg.app_data_count; i++) {
+                                    if (strcmp(msg.app_data[i].key, "message_type") == 0) {
+                                        printf("[FCM] Internal message: %s (skipped)\n",
+                                               msg.app_data[i].value);
+                                        is_internal = true;
+                                        break;
+                                    }
+                                }
+                                if (is_internal) {
+                                    // Save timestamp as reference even for internal messages
+                                    uint64_t its = parse_pid_timestamp(msg.persistent_id);
+                                    if (its > s_last_ts) {
+                                        save_last_timestamp(its);
+                                    }
+                                    free(msg.raw_data);
+                                    break;
+                                }
+
                                 // Filter old messages by persistent_id timestamp
                                 uint64_t msg_ts = parse_pid_timestamp(msg.persistent_id);
                                 if (msg_ts > 0 && msg_ts <= s_last_ts) {
@@ -382,7 +465,68 @@ esp_err_t fcm_start(fcm_message_cb_t callback) {
                                     save_last_timestamp(msg_ts);
                                 }
 
+                                // Auto-decrypt if crypto-key and encryption headers present
+                                msg.json_data = NULL;
+                                const char *crypto_key_str = NULL;
+                                const char *encryption_str = NULL;
+                                for (int i = 0; i < msg.app_data_count; i++) {
+                                    if (strcmp(msg.app_data[i].key, "crypto-key") == 0)
+                                        crypto_key_str = msg.app_data[i].value;
+                                    else if (strcmp(msg.app_data[i].key, "encryption") == 0)
+                                        encryption_str = msg.app_data[i].value;
+                                }
+
+                                if (crypto_key_str && encryption_str &&
+                                    msg.raw_data && msg.raw_data_len > 0) {
+                                    // Extract dh= from crypto-key
+                                    const char *dh_start = strstr(crypto_key_str, "dh=");
+                                    if (dh_start) {
+                                        dh_start += 3;
+                                        const char *dh_end = strchr(dh_start, ';');
+                                        size_t dh_len = dh_end ? (size_t)(dh_end - dh_start) : strlen(dh_start);
+
+                                        uint8_t server_pub[128];
+                                        size_t server_pub_len = 0;
+
+                                        // Extract salt= from encryption
+                                        const char *salt_start = strstr(encryption_str, "salt=");
+                                        if (salt_start &&
+                                            fcm_base64url_decode(dh_start, dh_len, server_pub,
+                                                                  sizeof(server_pub), &server_pub_len) == 0) {
+                                            salt_start += 5;
+                                            const char *salt_end = strchr(salt_start, ';');
+                                            size_t salt_str_len = salt_end ? (size_t)(salt_end - salt_start) : strlen(salt_start);
+
+                                            uint8_t salt[64];
+                                            size_t salt_len = 0;
+                                            if (fcm_base64url_decode(salt_start, salt_str_len, salt,
+                                                                      sizeof(salt), &salt_len) == 0) {
+                                                uint8_t *plaintext = (uint8_t *)malloc(msg.raw_data_len);
+                                                size_t plaintext_len = 0;
+                                                if (plaintext &&
+                                                    fcm_decrypt(server_pub, server_pub_len,
+                                                                salt, salt_len,
+                                                                msg.raw_data, msg.raw_data_len,
+                                                                plaintext, &plaintext_len) == ESP_OK &&
+                                                    plaintext_len > 0) {
+                                                    msg.json_data = (char *)malloc(plaintext_len + 1);
+                                                    if (msg.json_data) {
+                                                        memcpy(msg.json_data, plaintext, plaintext_len);
+                                                        msg.json_data[plaintext_len] = '\0';
+                                                    }
+                                                }
+                                                free(plaintext);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Parse JSON into notif_data struct (safe if json_data is NULL)
+                                msg.notif_data = parse_notif_json(msg.json_data);
+
                                 if (callback) callback(&msg);
+                                free(msg.notif_data);
+                                free(msg.json_data);
                                 free(msg.raw_data);
                                 break;
                             }
