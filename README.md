@@ -5,10 +5,11 @@ A Firebase Cloud Messaging (FCM) receiver library for ESP32 (Arduino framework).
 ## Features
 - **Auto-registration** — only `api_key`, `app_id`, and `project_id` are needed. All device credentials (ECDH keys, GCM token, FCM token) are generated on-device automatically.
 - **NVS persistence** — generated credentials are saved to flash and reused across reboots. Registration only happens once.
-- **Topic subscription** — subscribe to FCM topics to receive broadcast messages.
+- **Topic subscription** — subscribe and unsubscribe to FCM topics to manage broadcast messages dynamically.
 - **Encrypted push** — decrypts WebPush `aesgcm` payloads on-device using mbedTLS.
 - **Persistent MCS connection** — maintains a long-lived TLS connection to Google's MCS server for instant message delivery.
-- **Low overhead** — runs in a dedicated FreeRTOS task, no HTTP polling required.
+- **Auto Reconnect** — built-in reconnect handler with exponential backoff and network watchdog.
+- **Low overhead** — runs in a dedicated FreeRTOS task, no HTTP polling required. Use custom `FCM_READ_BUF_SIZE` to fit constrained environments.
 
 ## Supported Hardware
 - ESP32 (all variants: ESP32, ESP32-S2, ESP32-S3, ESP32-C3, ESP32-C6, ESP32-H2)
@@ -61,19 +62,27 @@ static const fcm_config_t fcm_cfg = {
     .api_key    = "YOUR_FIREBASE_API_KEY",
     .app_id     = "YOUR_FIREBASE_APP_ID",
     .project_id = "YOUR_FIREBASE_PROJECT_ID",
+    .auto_reconnect = true, // Automatic reconnection with exponential backoff
+    .status_cb = [](fcm_status_t status) {
+        Serial.printf("FCM Status: %d\n", status);
+    }
 };
 
 static void on_message(const fcm_message_t *msg) {
     if (msg->notif_data) {
         Serial.printf("Title: %s\n", msg->notif_data->title);
         Serial.printf("Body:  %s\n", msg->notif_data->body);
+        if (strlen(msg->notif_data->image_url) > 0) {
+            Serial.printf("Image: %s\n", msg->notif_data->image_url);
+        }
     }
 }
 
 static void mcs_task(void *arg) {
-    fcm_start(on_message);     // blocks forever, listening for messages
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    esp_restart();
+    while (1) {
+        fcm_start(on_message);     // blocks until disconnect or failure
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
 }
 
 void setup() {
@@ -83,7 +92,7 @@ void setup() {
 
     fcm_init(&fcm_cfg);                  // auto-registers on first boot
     fcm_subscribe("my_topic");            // subscribe to a topic
-    xTaskCreate(mcs_task, "mcs", 16384, NULL, 5, NULL);
+    xTaskCreate(mcs_task, "mcs", FCM_MIN_STACK_SIZE, NULL, 5, NULL);
 }
 
 void loop() { delay(1000); }
@@ -120,11 +129,23 @@ After initialization, `fcm_start()` opens a TLS connection to `mtalk.google.com:
 ### `fcm_init(const fcm_config_t *config)`
 Initialize FCM. Auto-registers if no credentials exist in NVS.
 
+### `fcm_clear_credentials(void)`
+Wipes out NVS-stored credentials on demand (e.g. for factory reset).
+
+### `fcm_get_token(void)`
+Returns the current FCM token, or empty string if not initialized.
+
+### `fcm_set_heartbeat_interval(uint32_t seconds)`
+Overrides the default 600s ping interval to check network connection vitality.
+
 ### `fcm_subscribe(const char *topic)`
 Subscribe to an FCM topic. Requires `fcm_init()` to be called first.
 
+### `fcm_unsubscribe(const char *topic)`
+Unsubscribe from an FCM topic.
+
 ### `fcm_start(fcm_message_cb_t callback)`
-Connect to MCS and listen for messages. **Blocks indefinitely.** Run this in a dedicated FreeRTOS task with at least 16KB stack.
+Connect to MCS and listen for messages. **Blocks indefinitely** (unless `auto_reconnect` is disabled). Run this in a dedicated FreeRTOS task with at least `FCM_MIN_STACK_SIZE` (16KB).
 
 ### `fcm_config_t`
 ```c
@@ -139,6 +160,9 @@ typedef struct {
     const char *fcm_token;
     const char *private_key_b64;
     const char *auth_secret_b64;
+
+    bool        auto_reconnect; // Automatically reconnect on errors with exponential backoff
+    fcm_status_cb_t status_cb;  // Status monitoring callback (CONNECTING, CONNECTED, DISCONNECTED)
 } fcm_config_t;
 ```
 
