@@ -13,6 +13,10 @@ static const fcm_config_t fcm_cfg = {
     .api_key    = "YOUR_FIREBASE_API_KEY",
     .app_id     = "YOUR_FIREBASE_APP_ID",
     .project_id = "YOUR_FIREBASE_PROJECT_ID",
+    .auto_reconnect = true, // automatically reconnect on connection drop
+    .status_cb = [](fcm_status_t status) {
+        Serial.printf("FCM Status: %d\n", status);
+    }
 };
 
 // ── FCM message callback ──
@@ -40,12 +44,13 @@ static void on_message(const fcm_message_t *msg) {
 // ── MCS task (runs in dedicated FreeRTOS task with large stack) ──
 
 static void mcs_task(void *arg) {
-    esp_err_t err = fcm_start(on_message);
-    Serial.printf("MCS listener exited: %d\n", err);
+    while (1) {
+        esp_err_t err = fcm_start(on_message);
+        Serial.printf("MCS listener exited: %s\n", esp_err_to_name(err));
 
-    Serial.println("Restarting in 3 seconds...");
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    esp_restart();
+        Serial.println("Reconnecting in 5 seconds...");
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
 }
 
 // ── Arduino setup & loop ──
@@ -72,6 +77,7 @@ void setup() {
         return;
     }
     Serial.println("FCM initialized");
+    Serial.printf("FCM Token: %s\n", fcm_get_token());
 
     // Subscribe to topic
     ret = fcm_subscribe(FCM_TOPIC);
@@ -83,7 +89,7 @@ void setup() {
 
     // Start MCS listener in dedicated task (TLS needs ~16KB stack)
     Serial.println("Starting MCS listener...");
-    xTaskCreate(mcs_task, "mcs_task", 16384, NULL, 5, NULL);
+    xTaskCreate(mcs_task, "mcs_task", FCM_MIN_STACK_SIZE, NULL, 5, NULL);
 }
 
 void loop() {

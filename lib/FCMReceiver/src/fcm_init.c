@@ -30,6 +30,9 @@ extern esp_err_t fcm_register(const fcm_config_t *cfg,
 // Global runtime state
 fcm_state_t g_fcm_state;
 
+// Internal references
+extern const fcm_config_t *s_current_config;
+
 // ── NVS helpers ──
 
 static esp_err_t nvs_load_credentials(void) {
@@ -51,17 +54,17 @@ static esp_err_t nvs_load_credentials(void) {
     // Load fcm_token
     size_t len = sizeof(g_fcm_state.fcm_token);
     err = nvs_get_str(handle, "fcm_token", g_fcm_state.fcm_token, &len);
-    if (err != ESP_OK) { nvs_close(handle); return ESP_ERR_NOT_FOUND; }
+    if (err != ESP_OK || strlen(g_fcm_state.fcm_token) == 0) { nvs_close(handle); return ESP_ERR_NOT_FOUND; }
 
     // Load private_key_b64
     len = sizeof(g_fcm_state.private_key_b64);
     err = nvs_get_str(handle, "priv_key", g_fcm_state.private_key_b64, &len);
-    if (err != ESP_OK) { nvs_close(handle); return ESP_ERR_NOT_FOUND; }
+    if (err != ESP_OK || strlen(g_fcm_state.private_key_b64) == 0) { nvs_close(handle); return ESP_ERR_NOT_FOUND; }
 
     // Load auth_secret_b64
     len = sizeof(g_fcm_state.auth_secret_b64);
     err = nvs_get_str(handle, "auth_secret", g_fcm_state.auth_secret_b64, &len);
-    if (err != ESP_OK) { nvs_close(handle); return ESP_ERR_NOT_FOUND; }
+    if (err != ESP_OK || strlen(g_fcm_state.auth_secret_b64) == 0) { nvs_close(handle); return ESP_ERR_NOT_FOUND; }
 
     nvs_close(handle);
 
@@ -69,6 +72,9 @@ static esp_err_t nvs_load_credentials(void) {
     printf("[FCM] FCM token: %s\n", g_fcm_state.fcm_token);
     return ESP_OK;
 }
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static esp_err_t nvs_save_credentials(void) {
     nvs_handle_t handle;
@@ -84,11 +90,19 @@ static esp_err_t nvs_save_credentials(void) {
     nvs_set_str(handle, "priv_key", g_fcm_state.private_key_b64);
     nvs_set_str(handle, "auth_secret", g_fcm_state.auth_secret_b64);
 
-    err = nvs_commit(handle);
+    int retries = 3;
+    while (retries > 0) {
+        err = nvs_commit(handle);
+        if (err == ESP_OK) break;
+        printf("[FCM] WARNING: Failed to commit NVS (retrying): %s\n", esp_err_to_name(err));
+        retries--;
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
     nvs_close(handle);
 
     if (err != ESP_OK) {
-        printf("[FCM] ERROR: Failed to commit NVS: %s\n", esp_err_to_name(err));
+        printf("[FCM] ERROR: Failed to commit NVS after retries: %s\n", esp_err_to_name(err));
         return err;
     }
 
@@ -98,8 +112,30 @@ static esp_err_t nvs_save_credentials(void) {
 
 // ── Public API ──
 
-esp_err_t fcm_init(const fcm_config_t *config) {
+esp_err_t fcm_clear_credentials(void) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        nvs_erase_all(handle);
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
     memset(&g_fcm_state, 0, sizeof(g_fcm_state));
+    return err;
+}
+
+const char* fcm_get_token(void) {
+    return g_fcm_state.fcm_token;
+}
+
+esp_err_t fcm_init(const fcm_config_t *config) {
+    if (!config) {
+        printf("[FCM] ERROR: Null config provided to fcm_init\n");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(&g_fcm_state, 0, sizeof(g_fcm_state));
+    s_current_config = config;
 
     // Copy config fields that are always needed
     if (config->app_id) strncpy(g_fcm_state.app_id, config->app_id, sizeof(g_fcm_state.app_id) - 1);

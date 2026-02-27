@@ -316,6 +316,13 @@ esp_err_t fcm_crypto_generate_keys(char *priv_key_b64, size_t priv_cap,
         return ESP_FAIL;
     }
 
+    #if defined(MBEDTLS_PLATFORM_ZEROIZE_H) || defined(MBEDTLS_PLATFORM_C)
+    #include "mbedtls/platform_util.h"
+    mbedtls_platform_zeroize(der_buf, sizeof(der_buf));
+    #else
+    volatile uint8_t* p = der_buf; while (p < der_buf + sizeof(der_buf)) *p++ = 0;
+    #endif
+
     printf("[FCM] Generated new ECDH keys and auth secret\n");
     return ESP_OK;
 }
@@ -491,6 +498,25 @@ esp_err_t fcm_decrypt(const uint8_t *server_pub, size_t server_pub_len,
     } else {
         *out_len = ciphertext_len;
     }
+
+    // ── Zero-out sensitive key material before returning ──
+    #if defined(MBEDTLS_PLATFORM_ZEROIZE_H) || defined(MBEDTLS_PLATFORM_C)
+    #include "mbedtls/platform_util.h"
+    mbedtls_platform_zeroize(shared_buf, sizeof(shared_buf));
+    mbedtls_platform_zeroize(prk1, sizeof(prk1));
+    mbedtls_platform_zeroize(ikm2, sizeof(ikm2));
+    mbedtls_platform_zeroize(prk2, sizeof(prk2));
+    mbedtls_platform_zeroize(cek, sizeof(cek));
+    mbedtls_platform_zeroize(nonce, sizeof(nonce));
+    #else
+    volatile uint8_t* p;
+    p = shared_buf; while (p < shared_buf + sizeof(shared_buf)) *p++ = 0;
+    p = prk1; while (p < prk1 + sizeof(prk1)) *p++ = 0;
+    p = ikm2; while (p < ikm2 + sizeof(ikm2)) *p++ = 0;
+    p = prk2; while (p < prk2 + sizeof(prk2)) *p++ = 0;
+    p = cek; while (p < cek + sizeof(cek)) *p++ = 0;
+    p = nonce; while (p < nonce + sizeof(nonce)) *p++ = 0;
+    #endif
 
     return ESP_OK;
 }

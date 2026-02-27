@@ -86,6 +86,7 @@ size_t pb_decoder_remaining(const pb_decoder_t *d) {
 int pb_decode_varint(pb_decoder_t *d, uint64_t *value) {
     uint64_t x = 0; uint32_t s = 0;
     for (size_t i = 0; d->pos + i < d->len; i++) {
+        if (i >= 10) return -1; // varint max 10 bytes for 64-bit
         uint8_t b = d->buf[d->pos + i];
         x |= ((uint64_t)(b & 0x7F)) << s;
         if (b < 0x80) { *value = x; d->pos += i + 1; return 0; }

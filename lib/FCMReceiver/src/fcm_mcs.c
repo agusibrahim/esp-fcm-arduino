@@ -13,6 +13,8 @@
 #include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include <sys/select.h>
+#include <sys/time.h>
 
 // ── Message dedup using persistent_id timestamp (persisted in NVS) ──
 // persistent_id format: "0:1772068660657995%7031b2e6f9fd7ecd"
@@ -71,6 +73,11 @@ static fcm_notif_data_t *parse_notif_json(const char *json_str) {
         if (body && cJSON_IsString(body))
             snprintf(nd->body, sizeof(nd->body), "%s", body->valuestring);
     }
+
+    // "image"
+    cJSON *img = cJSON_GetObjectItem(root, "image");
+    if (img && cJSON_IsString(img))
+        snprintf(nd->image_url, sizeof(nd->image_url), "%s", img->valuestring);
 
     // "fcmMessageId"
     cJSON *mid = cJSON_GetObjectItem(root, "fcmMessageId");
@@ -132,10 +139,83 @@ static fcm_notif_data_t *parse_notif_json(const char *json_str) {
 #define STATE_PROTO      3
 
 // Heartbeat interval (600 seconds)
-#define HEARTBEAT_INTERVAL_US  (600LL * 1000000LL)
+static uint64_t g_fcm_heartbeat_interval_us = 600LL * 1000000LL;
+
+const fcm_config_t *s_current_config = NULL;
+
+void fcm_set_heartbeat_interval(uint32_t seconds) {
+    g_fcm_heartbeat_interval_us = (uint64_t)seconds * 1000000LL;
+}
 
 // Read buffer
-#define READ_BUF_SIZE    (32 * 1024)
+#ifndef FCM_READ_BUF_SIZE
+#define FCM_READ_BUF_SIZE    (32 * 1024)
+#endif
+
+// ── Circular Buffer Helper ──
+typedef struct {
+    uint8_t *data;
+    size_t capacity;
+    size_t head;
+    size_t tail;
+    size_t length;
+} ringbuf_t;
+
+static void rb_init(ringbuf_t *rb, size_t capacity) {
+    rb->data = (uint8_t *)malloc(capacity);
+    rb->capacity = capacity;
+    rb->head = 0;
+    rb->tail = 0;
+    rb->length = 0;
+}
+
+static void rb_free(ringbuf_t *rb) {
+    if (rb->data) free(rb->data);
+    rb->data = NULL;
+}
+
+static size_t rb_write(ringbuf_t *rb, const uint8_t *data, size_t len) {
+    if (rb->length + len > rb->capacity) {
+        len = rb->capacity - rb->length;
+    }
+    if (len == 0) return 0;
+
+    size_t first_chunk = rb->capacity - rb->tail;
+    if (len <= first_chunk) {
+        memcpy(rb->data + rb->tail, data, len);
+    } else {
+        memcpy(rb->data + rb->tail, data, first_chunk);
+        memcpy(rb->data, data + first_chunk, len - first_chunk);
+    }
+
+    rb->tail = (rb->tail + len) % rb->capacity;
+    rb->length += len;
+    return len;
+}
+
+static void rb_consume(ringbuf_t *rb, size_t len) {
+    if (len > rb->length) len = rb->length;
+    rb->head = (rb->head + len) % rb->capacity;
+    rb->length -= len;
+}
+
+static size_t rb_peek(ringbuf_t *rb, uint8_t *out, size_t len) {
+    if (len > rb->length) len = rb->length;
+    if (len == 0) return 0;
+
+    size_t first_chunk = rb->capacity - rb->head;
+    if (len <= first_chunk) {
+        memcpy(out, rb->data + rb->head, len);
+    } else {
+        memcpy(out, rb->data + rb->head, first_chunk);
+        memcpy(out, rb->data, len - first_chunk);
+    }
+    return len;
+}
+
+static uint8_t rb_peek_byte(ringbuf_t *rb) {
+    return rb->data[rb->head];
+}
 
 // ── Login request builder ──
 
@@ -283,7 +363,7 @@ static void parse_data_message(const uint8_t *data, size_t len, fcm_message_t *m
 
 // ── MCS connection and listen loop ──
 
-esp_err_t fcm_start(fcm_message_cb_t callback) {
+static esp_err_t fcm_start_internal(fcm_message_cb_t callback) {
     // Load last seen timestamp from NVS
     load_last_timestamp();
 
@@ -328,12 +408,18 @@ esp_err_t fcm_start(fcm_message_cb_t callback) {
     printf("[FCM] Login request sent\n");
 
     // State machine
-    uint8_t *buffer = (uint8_t *)malloc(READ_BUF_SIZE);
-    size_t buf_len = 0;
+    ringbuf_t rb;
+    rb_init(&rb, FCM_READ_BUF_SIZE);
+
+    if (s_current_config && s_current_config->status_cb) {
+        s_current_config->status_cb(FCM_STATUS_CONNECTED);
+    }
+
     uint8_t state = STATE_VERSION;
     uint8_t message_tag = 0;
     size_t message_size = 0;
-    int64_t last_heartbeat = esp_timer_get_time();
+    int64_t last_heartbeat_sent = esp_timer_get_time();
+    int64_t last_heartbeat_ack = last_heartbeat_sent;
 
     while (1) {
         // Process buffered data
@@ -342,10 +428,9 @@ esp_err_t fcm_start(fcm_message_cb_t callback) {
             progress = false;
             switch (state) {
                 case STATE_VERSION:
-                    if (buf_len >= 1) {
-                        uint8_t version = buffer[0];
-                        memmove(buffer, buffer + 1, buf_len - 1);
-                        buf_len--;
+                    if (rb.length >= 1) {
+                        uint8_t version = rb_peek_byte(&rb);
+                        rb_consume(&rb, 1);
                         if (version < KMCS_VERSION && version != 38) {
                             printf("[FCM] ERROR: Invalid MCS version: %d\n", version);
                             goto cleanup;
@@ -357,21 +442,25 @@ esp_err_t fcm_start(fcm_message_cb_t callback) {
                     break;
 
                 case STATE_TAG:
-                    if (buf_len >= 1) {
-                        message_tag = buffer[0];
-                        memmove(buffer, buffer + 1, buf_len - 1);
-                        buf_len--;
+                    if (rb.length >= 1) {
+                        message_tag = rb_peek_byte(&rb);
+                        rb_consume(&rb, 1);
                         state = STATE_SIZE;
                         progress = true;
                     }
                     break;
 
                 case STATE_SIZE: {
+                    if (rb.length == 0) break;
+
+                    // Peek up to 5 bytes for varint
+                    uint8_t vbuf[5];
+                    size_t peek_len = rb_peek(&rb, vbuf, 5);
+
                     size_t size_val, consumed;
-                    int vr = pb_try_read_varint(buffer, buf_len, &size_val, &consumed);
+                    int vr = pb_try_read_varint(vbuf, peek_len, &size_val, &consumed);
                     if (vr == 1) {
-                        memmove(buffer, buffer + consumed, buf_len - consumed);
-                        buf_len -= consumed;
+                        rb_consume(&rb, consumed);
                         message_size = size_val;
                         if (message_size == 0) {
                             // Dispatch empty message
@@ -379,6 +468,9 @@ esp_err_t fcm_start(fcm_message_cb_t callback) {
                                 printf("[FCM] HeartbeatPing (empty), responding\n");
                                 uint8_t hb[] = {TAG_HEARTBEAT_PING, 0};
                                 esp_tls_conn_write(tls, hb, 2);
+                            } else if (message_tag == TAG_HEARTBEAT_ACK) {
+                                printf("[FCM] HeartbeatAck received\n");
+                                last_heartbeat_ack = esp_timer_get_time();
                             } else if (message_tag == TAG_LOGIN_RESPONSE) {
                                 printf("[FCM] LoginResponse received (empty)\n");
                             } else if (message_tag == TAG_CLOSE) {
@@ -394,16 +486,16 @@ esp_err_t fcm_start(fcm_message_cb_t callback) {
                         printf("[FCM] ERROR: Invalid varint\n");
                         goto cleanup;
                     }
+                    // vr == 0 means incomplete varint, wait for more data
                     break;
                 }
 
                 case STATE_PROTO:
-                    if (buf_len >= message_size) {
+                    if (rb.length >= message_size) {
                         // Extract payload
                         uint8_t *payload = (uint8_t *)malloc(message_size);
-                        memcpy(payload, buffer, message_size);
-                        memmove(buffer, buffer + message_size, buf_len - message_size);
-                        buf_len -= message_size;
+                        rb_peek(&rb, payload, message_size);
+                        rb_consume(&rb, message_size);
 
                         // Dispatch
                         switch (message_tag) {
@@ -415,6 +507,8 @@ esp_err_t fcm_start(fcm_message_cb_t callback) {
                                 }
                                 break;
                             case TAG_HEARTBEAT_ACK:
+                                printf("[FCM] HeartbeatAck received\n");
+                                last_heartbeat_ack = esp_timer_get_time();
                                 break;
                             case TAG_LOGIN_RESPONSE:
                                 printf("[FCM] LoginResponse received (%d bytes)\n", (int)message_size);
@@ -461,6 +555,34 @@ esp_err_t fcm_start(fcm_message_cb_t callback) {
 
                                 if (msg_ts > 0) {
                                     save_last_timestamp(msg_ts);
+                                }
+
+                                // Immediate ACK if requested
+                                if (msg.immediate_ack) {
+                                    printf("[FCM] Sending immediate ACK for %s\n", msg.id);
+
+                                    pb_encoder_t ack_enc;
+                                    pb_encoder_init(&ack_enc);
+
+                                    // IqStanza { id: msg.id }
+                                    pb_encode_string(&ack_enc, 3, msg.id); // 3 is id in IqStanza
+
+                                    size_t ack_len;
+                                    uint8_t *ack_payload = pb_encoder_detach(&ack_enc, &ack_len);
+
+                                    uint8_t ack_varint[5];
+                                    int var_len = pb_put_uvarint(ack_varint, sizeof(ack_varint), ack_len);
+
+                                    uint8_t *ack_pkt = malloc(2 + var_len + ack_len);
+                                    if (ack_pkt) {
+                                        ack_pkt[0] = KMCS_VERSION;
+                                        ack_pkt[1] = TAG_IQ_STANZA;
+                                        memcpy(ack_pkt + 2, ack_varint, var_len);
+                                        memcpy(ack_pkt + 2 + var_len, ack_payload, ack_len);
+                                        esp_tls_conn_write(tls, ack_pkt, 2 + var_len + ack_len);
+                                        free(ack_pkt);
+                                    }
+                                    free(ack_payload);
                                 }
 
                                 // Auto-decrypt if crypto-key and encryption headers present
@@ -541,23 +663,44 @@ esp_err_t fcm_start(fcm_message_cb_t callback) {
 
         // Periodic heartbeat
         int64_t now = esp_timer_get_time();
-        if (now - last_heartbeat >= HEARTBEAT_INTERVAL_US) {
+        if (now - last_heartbeat_sent >= g_fcm_heartbeat_interval_us) {
             printf("[FCM] Sending periodic heartbeat\n");
             uint8_t hb[] = {TAG_HEARTBEAT_PING, 0};
             esp_tls_conn_write(tls, hb, 2);
-            last_heartbeat = now;
+            last_heartbeat_sent = now;
+        }
+
+        // Heartbeat Watchdog
+        if (now - last_heartbeat_sent > 30000000LL && last_heartbeat_ack < last_heartbeat_sent) {
+            printf("[FCM] ERROR: Heartbeat timeout (no ACK). Disconnecting.\n");
+            goto cleanup;
+        }
+
+        // Safe esp_tls_conn_read polling using select()
+        int fd;
+        if (esp_tls_get_conn_sockfd(tls, &fd) == ESP_OK) {
+            fd_set read_fds;
+            FD_ZERO(&read_fds);
+            FD_SET(fd, &read_fds);
+
+            struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+            int ret = select(fd + 1, &read_fds, NULL, NULL, &tv);
+            if (ret < 0) {
+                printf("[FCM] ERROR: select() failed\n");
+                goto cleanup;
+            } else if (ret == 0) {
+                continue; // Timeout, nothing to read
+            }
         }
 
         // Read from socket
         uint8_t tmp[4096];
         ssize_t r = esp_tls_conn_read(tls, tmp, sizeof(tmp));
         if (r > 0) {
-            if (buf_len + r > READ_BUF_SIZE) {
-                printf("[FCM] ERROR: Buffer overflow\n");
+            if (rb_write(&rb, tmp, r) < r) {
+                printf("[FCM] ERROR: Ring buffer overflow\n");
                 goto cleanup;
             }
-            memcpy(buffer + buf_len, tmp, r);
-            buf_len += r;
         } else if (r == 0) {
             printf("[FCM] ERROR: Connection closed by peer\n");
             goto cleanup;
@@ -574,7 +717,36 @@ esp_err_t fcm_start(fcm_message_cb_t callback) {
     }
 
 cleanup:
-    free(buffer);
+    rb_free(&rb);
     esp_tls_conn_destroy(tls);
     return ESP_FAIL;
+}
+
+esp_err_t fcm_start(fcm_message_cb_t callback) {
+    if (!s_current_config) return ESP_ERR_INVALID_STATE;
+
+    bool auto_reconnect = s_current_config->auto_reconnect;
+    int backoff_ms = 1000;
+    esp_err_t last_err = ESP_OK;
+
+    do {
+        if (s_current_config->status_cb) {
+            s_current_config->status_cb(FCM_STATUS_CONNECTING);
+        }
+
+        last_err = fcm_start_internal(callback);
+
+        if (s_current_config->status_cb) {
+            s_current_config->status_cb(FCM_STATUS_DISCONNECTED);
+        }
+
+        if (auto_reconnect) {
+            printf("[FCM] Reconnecting in %d ms...\n", backoff_ms);
+            vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+            backoff_ms *= 2;
+            if (backoff_ms > 60000) backoff_ms = 60000; // max 60s
+        }
+    } while (auto_reconnect);
+
+    return last_err;
 }

@@ -54,6 +54,32 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
     return ESP_OK;
 }
 
+// ── HTTP Retry helper ──
+
+static esp_err_t http_perform_with_retry(esp_http_client_handle_t client, int *out_status) {
+    int retries = 3;
+    int delay_ms = 2000;
+    esp_err_t err;
+
+    while (retries > 0) {
+        err = esp_http_client_perform(client);
+        *out_status = esp_http_client_get_status_code(client);
+
+        if (err == ESP_OK && *out_status < 500) {
+            return ESP_OK; // Success or non-transient error
+        }
+
+        printf("[FCM] WARNING: HTTP transient failure (err=%s status=%d), retrying in %d ms...\n",
+               esp_err_to_name(err), *out_status, delay_ms);
+
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
+        delay_ms *= 2; // exponential backoff
+        retries--;
+    }
+
+    return err;
+}
+
 // ── Step 1: GCM Checkin ──
 
 static esp_err_t fcm_gcm_checkin(uint64_t *android_id_out, uint64_t *security_token_out) {
@@ -107,8 +133,8 @@ static esp_err_t fcm_gcm_checkin(uint64_t *android_id_out, uint64_t *security_to
     esp_http_client_set_header(client, "Content-Type", "application/x-protobuf");
     esp_http_client_set_post_field(client, (const char *)body, (int)body_len);
 
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
+    int status = 0;
+    esp_err_t err = http_perform_with_retry(client, &status);
     esp_http_client_cleanup(client);
     free(body);
 
@@ -251,8 +277,8 @@ static esp_err_t fcm_gcm_register(uint64_t android_id, uint64_t security_token,
     esp_http_client_set_header(client, "User-Agent", "");
     esp_http_client_set_post_field(client, body, body_len);
 
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
+    int status = 0;
+    esp_err_t err = http_perform_with_retry(client, &status);
     esp_http_client_cleanup(client);
 
     if (err != ESP_OK || status != 200) {
@@ -357,8 +383,8 @@ static esp_err_t fcm_fcm_install(const fcm_config_t *cfg, const char *fid,
     esp_http_client_set_header(client, "x-firebase-client", "fire-installations/0.6.4");
     esp_http_client_set_post_field(client, body, body_len);
 
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
+    int status = 0;
+    esp_err_t err = http_perform_with_retry(client, &status);
     esp_http_client_cleanup(client);
 
     if (err != ESP_OK || status != 200) {
@@ -524,7 +550,14 @@ esp_err_t fcm_register(const fcm_config_t *cfg,
                         fcm_registration_t *result) {
     esp_err_t err;
 
-    printf("[FCM] Free heap before registration: %u bytes\n", (unsigned)esp_get_free_heap_size());
+    uint32_t free_heap = esp_get_free_heap_size();
+    printf("[FCM] Free heap before registration: %u bytes\n", (unsigned)free_heap);
+
+    // Warn/Fail if heap is dangerously low
+    if (free_heap < 40000) {
+        printf("[FCM] ERROR: Insufficient heap for registration (%u < 40KB)\n", (unsigned)free_heap);
+        return ESP_ERR_NO_MEM;
+    }
 
     // Step 1: GCM Checkin
     err = fcm_gcm_checkin(&result->android_id, &result->security_token);

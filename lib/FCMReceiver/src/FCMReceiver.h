@@ -9,7 +9,19 @@
 extern "C" {
 #endif
 
+#define FCM_RECEIVER_VERSION "1.0.0"
+#define FCM_MIN_STACK_SIZE (16 * 1024)
+
 // ── Configuration ──
+
+typedef enum {
+    FCM_STATUS_DISCONNECTED,
+    FCM_STATUS_CONNECTING,
+    FCM_STATUS_CONNECTED,
+    FCM_STATUS_AUTH_FAILED
+} fcm_status_t;
+
+typedef void (*fcm_status_cb_t)(fcm_status_t status);
 
 typedef struct {
     // Required for auto-registration:
@@ -23,6 +35,10 @@ typedef struct {
     const char *fcm_token;
     const char *private_key_b64;
     const char *auth_secret_b64;
+
+    // Automatic reconnection with exponential backoff
+    bool        auto_reconnect;
+    fcm_status_cb_t status_cb;
 } fcm_config_t;
 
 // ── Runtime state (populated by fcm_init, read by other modules) ──
@@ -56,6 +72,7 @@ typedef struct {
 typedef struct {
     char          title[256];
     char          body[512];
+    char          image_url[256];
     char          fcm_message_id[128];
     char          from[64];
     char          priority[16];
@@ -88,8 +105,20 @@ typedef void (*fcm_message_cb_t)(const fcm_message_t *msg);
 // Otherwise tries NVS, then runs auto-registration.
 esp_err_t fcm_init(const fcm_config_t *config);
 
+// Clear NVS credentials on demand (e.g. for device reset)
+esp_err_t fcm_clear_credentials(void);
+
+// Expose current FCM token
+const char* fcm_get_token(void);
+
+// Override default heartbeat interval (in seconds)
+void fcm_set_heartbeat_interval(uint32_t seconds);
+
 // Subscribe to a topic via GCM register3 endpoint.
 esp_err_t fcm_subscribe(const char *topic);
+
+// Unsubscribe from a topic
+esp_err_t fcm_unsubscribe(const char *topic);
 
 // Connect to MCS, login, and listen for messages. Blocks forever.
 // Run this in a FreeRTOS task with >= 16KB stack.
