@@ -1,5 +1,21 @@
 #include "FCMReceiver.h"
 
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+
+esp_err_t fcm_subscribe(const char *topic) {
+    (void)topic;
+    printf("[FCM] Topic subscribe is not supported on ESP8266 yet\n");
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t fcm_unsubscribe(const char *topic) {
+    (void)topic;
+    printf("[FCM] Topic unsubscribe is not supported on ESP8266 yet\n");
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+#else
+
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -220,3 +236,4 @@ esp_err_t fcm_unsubscribe(const char *topic) {
     free(resp.buf);
     return ESP_OK;
 }
+#endif

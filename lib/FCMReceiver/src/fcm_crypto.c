@@ -1,3 +1,4 @@
+#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
 #include "FCMReceiver.h"
 
 #include <string.h>
@@ -11,12 +12,11 @@
 #include "mbedtls/base64.h"
 #include "mbedtls/md.h"
 #include "mbedtls/bignum.h"
-#include "esp_random.h"
 
 // RNG callback required by mbedTLS for ECDH blinding
 static int rng_func(void *ctx, unsigned char *buf, size_t len) {
     (void)ctx;
-    esp_fill_random(buf, len);
+    fcm_platform_random(buf, len);
     return 0;
 }
 
@@ -308,7 +308,7 @@ esp_err_t fcm_crypto_generate_keys(char *priv_key_b64, size_t priv_cap,
 
     // Generate 16 random bytes for auth_secret
     uint8_t auth_raw[16];
-    esp_fill_random(auth_raw, sizeof(auth_raw));
+    fcm_platform_random(auth_raw, sizeof(auth_raw));
 
     // Base64url encode auth secret
     if (fcm_base64url_encode(auth_raw, sizeof(auth_raw), auth_secret_b64url, auth_cap, NULL) != 0) {
@@ -331,7 +331,7 @@ esp_err_t fcm_crypto_generate_keys(char *priv_key_b64, size_t priv_cap,
 
 esp_err_t fcm_generate_fid(char *fid_out, size_t fid_cap) {
     uint8_t raw[17];
-    esp_fill_random(raw, sizeof(raw));
+    fcm_platform_random(raw, sizeof(raw));
     // FID format: first 4 bits = 0x7 (0111), rest random
     raw[0] = 0x70 | (raw[0] & 0x0F);
 
@@ -520,3 +520,4 @@ esp_err_t fcm_decrypt(const uint8_t *server_pub, size_t server_pub_len,
 
     return ESP_OK;
 }
+#endif

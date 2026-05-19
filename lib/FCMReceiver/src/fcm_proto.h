@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define PB_WIRE_VARINT           0
 #define PB_WIRE_BIT64            1
 #define PB_WIRE_LENGTH_DELIMITED 2
@@ -47,3 +51,7 @@ int pb_decode_fixed64(pb_decoder_t *d, uint64_t *value);
 
 int pb_put_uvarint(uint8_t *buf, size_t buf_cap, uint64_t value);
 int pb_try_read_varint(const uint8_t *buf, size_t len, size_t *value, size_t *consumed);
+
+#ifdef __cplusplus
+}
+#endif

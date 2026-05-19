@@ -3,8 +3,12 @@
 #include <string.h>
 #include <stdio.h>
 #include <inttypes.h>
+#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#endif
 
 // Internal declarations (defined in fcm_crypto.c)
 extern esp_err_t fcm_crypto_init_with_keys(const char *private_key_b64, const char *auth_secret_b64);
@@ -35,6 +39,7 @@ extern const fcm_config_t *s_current_config;
 
 // ── NVS helpers ──
 
+#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
 static esp_err_t nvs_load_credentials(void) {
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
@@ -73,9 +78,6 @@ static esp_err_t nvs_load_credentials(void) {
     return ESP_OK;
 }
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-
 static esp_err_t nvs_save_credentials(void) {
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
@@ -109,10 +111,12 @@ static esp_err_t nvs_save_credentials(void) {
     printf("[FCM] Saved credentials to NVS\n");
     return ESP_OK;
 }
+#endif
 
 // ── Public API ──
 
 esp_err_t fcm_clear_credentials(void) {
+#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err == ESP_OK) {
@@ -122,6 +126,10 @@ esp_err_t fcm_clear_credentials(void) {
     }
     memset(&g_fcm_state, 0, sizeof(g_fcm_state));
     return err;
+#else
+    memset(&g_fcm_state, 0, sizeof(g_fcm_state));
+    return ESP_OK;
+#endif
 }
 
 const char* fcm_get_token(void) {
@@ -160,6 +168,10 @@ esp_err_t fcm_init(const fcm_config_t *config) {
         return ESP_OK;
     }
 
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+    printf("[FCM] ERROR: ESP8266 currently requires pre-generated credentials\n");
+    return ESP_ERR_INVALID_ARG;
+#else
     // Path 2: Try loading from NVS
     if (nvs_load_credentials() == ESP_OK && g_fcm_state.android_id != 0) {
         printf("[FCM] Using credentials from NVS\n");
@@ -224,4 +236,5 @@ esp_err_t fcm_init(const fcm_config_t *config) {
     printf("[FCM] Auto-registration complete!\n");
     printf("[FCM] FCM token: %s\n", g_fcm_state.fcm_token);
     return ESP_OK;
+#endif
 }

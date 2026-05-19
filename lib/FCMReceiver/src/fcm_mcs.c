@@ -1,3 +1,4 @@
+#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
 #include "FCMReceiver.h"
 #include "fcm_proto.h"
 
@@ -750,3 +751,4 @@ esp_err_t fcm_start(fcm_message_cb_t callback) {
 
     return last_err;
 }
+#endif

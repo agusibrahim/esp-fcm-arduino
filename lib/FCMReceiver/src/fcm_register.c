@@ -1,3 +1,4 @@
+#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
 #include "FCMReceiver.h"
 #include "fcm_proto.h"
 
@@ -595,3 +596,4 @@ esp_err_t fcm_register(const fcm_config_t *cfg,
     printf("[FCM] Registration complete!\n");
     return ESP_OK;
 }
+#endif

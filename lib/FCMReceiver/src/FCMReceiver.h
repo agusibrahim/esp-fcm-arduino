@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include "esp_err.h"
+#include "fcm_platform.h"
 
 #ifdef __cplusplus
 extern "C" {
