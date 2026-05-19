@@ -63,9 +63,25 @@ CONFIG_MBEDTLS_PK_WRITE_C=y
 > After adding or changing `sdkconfig.defaults`, do a clean build (`pio run -t clean && pio run`) so the settings take effect.
 
 ### Arduino IDE
-1. Download this repository as a `.zip` file.
+
+1. Download this repository as a ZIP (Code → Download ZIP).
 2. In the Arduino IDE, go to **Sketch > Include Library > Add .ZIP Library...**
-3. Select the downloaded `.zip` file.
+3. Select the downloaded ZIP file. The library is at the root of the repo, so the ZIP imports cleanly.
+4. Examples appear under **File > Examples > FCMReceiver**.
+
+### Repository layout
+
+```
+esp-fcm-arduino/
+├── library.properties         (Arduino IDE library metadata)
+├── library.json               (PlatformIO library metadata)
+├── src/                       (library source — what gets compiled)
+├── examples/                  (example sketches)
+└── dev_project/               (PlatformIO project used to develop/test the library)
+    ├── platformio.ini
+    ├── sdkconfig.defaults
+    └── src/main.cpp
+```
 
 ## Quick Start (ESP32)
 
