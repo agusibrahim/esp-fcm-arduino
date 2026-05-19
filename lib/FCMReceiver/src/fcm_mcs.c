@@ -143,9 +143,14 @@ static fcm_notif_data_t *parse_notif_json(const char *json_str) {
 static uint64_t g_fcm_heartbeat_interval_us = 600LL * 1000000LL;
 
 const fcm_config_t *s_current_config = NULL;
+static fcm_should_stop_cb_t s_should_stop_cb = NULL;
 
 void fcm_set_heartbeat_interval(uint32_t seconds) {
     g_fcm_heartbeat_interval_us = (uint64_t)seconds * 1000000LL;
+}
+
+void fcm_set_should_stop_callback(fcm_should_stop_cb_t callback) {
+    s_should_stop_cb = callback;
 }
 
 // Read buffer
@@ -423,6 +428,9 @@ static esp_err_t fcm_start_internal(fcm_message_cb_t callback) {
     int64_t last_heartbeat_ack = last_heartbeat_sent;
 
     while (1) {
+        if (s_should_stop_cb && s_should_stop_cb()) {
+            goto cleanup;
+        }
         // Process buffered data
         bool progress = true;
         while (progress) {
@@ -597,6 +605,7 @@ static esp_err_t fcm_start_internal(fcm_message_cb_t callback) {
                                         encryption_str = msg.app_data[i].value;
                                 }
 
+#if !defined(FCM_DECRYPT_VIA_SERVER)
                                 if (crypto_key_str && encryption_str &&
                                     msg.raw_data && msg.raw_data_len > 0) {
                                     // Extract dh= from crypto-key
@@ -641,6 +650,7 @@ static esp_err_t fcm_start_internal(fcm_message_cb_t callback) {
                                         }
                                     }
                                 }
+#endif
 
                                 // Parse JSON into notif_data struct (safe if json_data is NULL)
                                 msg.notif_data = parse_notif_json(msg.json_data);

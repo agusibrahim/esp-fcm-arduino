@@ -39,6 +39,9 @@ typedef struct {
     // Automatic reconnection with exponential backoff
     bool        auto_reconnect;
     fcm_status_cb_t status_cb;
+
+    // Optional ESP8266 server-side decrypt endpoint.
+    const char *decrypt_api_url;
 } fcm_config_t;
 
 // ── Runtime state (populated by fcm_init, read by other modules) ──
@@ -97,6 +100,7 @@ typedef struct {
 } fcm_message_t;
 
 typedef void (*fcm_message_cb_t)(const fcm_message_t *msg);
+typedef bool (*fcm_should_stop_cb_t)(void);
 
 // ── Public API ──
 
@@ -123,6 +127,8 @@ esp_err_t fcm_unsubscribe(const char *topic);
 // Connect to MCS, login, and listen for messages. Blocks forever.
 // Run this in a FreeRTOS task with >= 16KB stack.
 esp_err_t fcm_start(fcm_message_cb_t callback);
+void fcm_set_should_stop_callback(fcm_should_stop_cb_t callback);
+esp_err_t fcm_mark_message_processed(const char *persistent_id);
 
 // ── Decryption helpers (for use in message callback) ──
 
